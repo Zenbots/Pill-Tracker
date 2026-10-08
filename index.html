@@ -272,6 +272,14 @@
     }
     .remove-btn:hover { background: var(--red-dim); border-color: var(--red); }
 
+    .backup-group { border-top: 1px solid var(--border); padding-top: 16px; }
+    .backup-note { font-size: .78rem; color: var(--text-muted); margin-bottom: 10px; line-height: 1.4; }
+    .backup-btns { display: flex; gap: 8px; }
+    .backup-btns .btn { flex: 1; justify-content: center; }
+    .backup-status { font-size: .78rem; margin-top: 8px; min-height: 1em; color: var(--green); }
+    .backup-status.error { color: var(--red); }
+    .modal { max-height: calc(100vh - 40px); overflow-y: auto; }
+
     .modal-footer { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
 
     /* ── Legend ── */
@@ -363,6 +371,16 @@
       <label>Daily Doses</label>
       <div class="dose-config-list" id="doseConfigList"></div>
       <button class="btn" id="addDoseBtn" style="width:100%;justify-content:center;margin-top:4px;">+ Add Dose Time</button>
+    </div>
+    <div class="form-group backup-group">
+      <label>Backup</label>
+      <p class="backup-note">Your log lives only on this device. Save a backup file now and then so you don't lose it.</p>
+      <div class="backup-btns">
+        <button class="btn" id="exportBtn">Save backup</button>
+        <button class="btn" id="importBtn">Restore backup</button>
+      </div>
+      <input type="file" id="importFile" accept="application/json,.json" hidden />
+      <p class="backup-status" id="backupStatus"></p>
     </div>
     <div class="modal-footer">
       <button class="btn" id="modalCancel">Cancel</button>
@@ -606,6 +624,7 @@ function closePanel() {
 function openSettings() {
   document.getElementById('pillNameInput').value = data.pillName;
   renderDoseConfig();
+  setBackupStatus('');
   document.getElementById('modalOverlay').classList.add('open');
 }
 
@@ -651,6 +670,79 @@ function saveSettings() {
   document.getElementById('modalOverlay').classList.remove('open');
   renderCalendar();
   renderStats();
+}
+
+// ── Backup / restore ─────────────────────────────────────────────────────────
+function setBackupStatus(msg, isError) {
+  const el = document.getElementById('backupStatus');
+  el.textContent = msg;
+  el.classList.toggle('error', !!isError);
+}
+
+async function exportBackup() {
+  const saved = loadData() || data;
+  const payload = { app: 'pill-tracker', version: 1, exportedAt: new Date().toISOString(), data: saved };
+  const t = today();
+  const filename = `pill-tracker-backup-${isoDate(t.y, t.m, t.d)}.json`;
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+
+  // On phones, the share sheet lets people save straight to Drive, email it, etc.
+  try {
+    const file = new File([blob], filename, { type: 'application/json' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: 'Pill Tracker backup' });
+      setBackupStatus('Backup shared.');
+      return;
+    }
+  } catch (err) {
+    if (err && err.name === 'AbortError') return; // user closed the share sheet
+  }
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setBackupStatus('Backup saved to your downloads.');
+}
+
+function isValidData(d) {
+  return d && typeof d === 'object' &&
+    typeof d.pillName === 'string' &&
+    Array.isArray(d.doses) &&
+    d.doses.every(x => x && typeof x.id === 'string' && typeof x.label === 'string' && typeof x.time === 'string') &&
+    d.log && typeof d.log === 'object' && !Array.isArray(d.log);
+}
+
+function importBackup(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    let parsed;
+    try { parsed = JSON.parse(reader.result); } catch {
+      setBackupStatus("That file isn't a Pill Tracker backup.", true);
+      return;
+    }
+    const incoming = parsed && parsed.app === 'pill-tracker' ? parsed.data : parsed;
+    if (!isValidData(incoming)) {
+      setBackupStatus("That file isn't a Pill Tracker backup.", true);
+      return;
+    }
+    const days = Object.keys(incoming.log).length;
+    if (!confirm(`Replace everything on this device with the backup (${days} day${days !== 1 ? 's' : ''} logged)?`)) return;
+    data = incoming;
+    saveData(data);
+    document.getElementById('pillNameDisplay').textContent = data.pillName;
+    document.getElementById('pillNameInput').value = data.pillName;
+    renderDoseConfig();
+    renderCalendar();
+    renderStats();
+    setBackupStatus('Backup restored.');
+  };
+  reader.onerror = () => setBackupStatus("Couldn't read that file.", true);
+  reader.readAsText(file);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -710,6 +802,16 @@ function init() {
     document.getElementById('modalOverlay').classList.remove('open');
   });
   document.getElementById('modalSave').addEventListener('click', saveSettings);
+
+  document.getElementById('exportBtn').addEventListener('click', exportBackup);
+  document.getElementById('importBtn').addEventListener('click', () => {
+    document.getElementById('importFile').click();
+  });
+  document.getElementById('importFile').addEventListener('change', e => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (file) importBackup(file);
+  });
   document.getElementById('modalOverlay').addEventListener('click', e => {
     if (e.target === document.getElementById('modalOverlay')) {
       data = loadData() || defaultData();
